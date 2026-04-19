@@ -205,3 +205,31 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# Project-specific
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Local data directories
+data/uploads/*
+data/postgres/*
+data/qdrant/*
+!data/uploads/.gitkeep
+!data/postgres/.gitkeep
+!data/qdrant/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Docker
+*.log
