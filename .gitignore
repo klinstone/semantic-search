@@ -215,11 +215,7 @@ __marimo__/
 
 # Local data directories
 data/uploads/*
-data/postgres/*
-data/qdrant/*
 !data/uploads/.gitkeep
-!data/postgres/.gitkeep
-!data/qdrant/.gitkeep
 
 # IDE
 .idea/
