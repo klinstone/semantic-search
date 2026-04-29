@@ -10,7 +10,6 @@ ENV PYTHONUNBUFFERED=1 \
 # libmagic1 — пригодится на этапе 4 для валидации файлов по magic bytes.
 # curl — для healthcheck'а из docker compose.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libmagic1 \
         curl \
     && rm -rf /var/lib/apt/lists/*
 

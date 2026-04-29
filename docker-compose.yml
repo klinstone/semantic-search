@@ -60,20 +60,14 @@ services:
       # Storage
       UPLOAD_DIR: /data/uploads
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-10}
-      # HuggingFace кэш — направляем в named volume (см. ниже).
-      # Без этого модель ~1.1 GB качается при каждом recreate контейнера.
       HF_HOME: /cache/huggingface
-      # Прочее
       APP_ENV: ${APP_ENV:-development}
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
     volumes:
-      # Hot reload: код мапим внутрь, .venv остаётся из образа в /opt/venv.
       - ./backend/app:/app/app
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
-      # Загруженные пользовательские файлы — bind mount, чтобы видеть с хоста.
       - ./data/uploads:/data/uploads
-      # Кэш моделей HuggingFace — пустой volume на этапе 1, заполнится с этапа 7.
       - huggingface_cache:/cache/huggingface
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"

@@ -2,9 +2,13 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
+
+from app.api.documents import router as documents_router
+from app.api.errors import register_exception_handlers
 from app.api.health import router as health_router
 from app.config import settings
 
@@ -50,6 +54,10 @@ def _ensure_qdrant_collection(client: QdrantClient) -> None:
 async def lifespan(app: FastAPI):
     logger.info("starting up (env=%s, version=%s)", settings.app_env, settings.app_version)
 
+    # Создаём директорию для загрузок, если её нет.
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("upload directory: %s", settings.upload_dir)
+
     qdrant = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
     _ensure_qdrant_collection(qdrant)
     app.state.qdrant = qdrant
@@ -66,4 +74,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS для разработки фронта. В проде origins сужают до конкретных доменов.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["*"],
+)
+
+register_exception_handlers(app)
+
+
 app.include_router(health_router, prefix="/api/v1")
+app.include_router(documents_router, prefix="/api/v1")
