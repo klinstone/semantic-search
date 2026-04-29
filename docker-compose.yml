@@ -32,11 +32,66 @@ services:
       timeout: 5s
       retries: 5
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: semsearch-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      # PostgreSQL
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      # Qdrant
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-document_chunks}
+      # Embedding model — фиксируется здесь, lifespan сверяет dim коллекции
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-base}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+      # Storage
+      UPLOAD_DIR: /data/uploads
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-10}
+      # HuggingFace кэш — направляем в named volume (см. ниже).
+      # Без этого модель ~1.1 GB качается при каждом recreate контейнера.
+      HF_HOME: /cache/huggingface
+      # Прочее
+      APP_ENV: ${APP_ENV:-development}
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+    volumes:
+      # Hot reload: код мапим внутрь, .venv остаётся из образа в /opt/venv.
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      # Загруженные пользовательские файлы — bind mount, чтобы видеть с хоста.
+      - ./data/uploads:/data/uploads
+      # Кэш моделей HuggingFace — пустой volume на этапе 1, заполнится с этапа 7.
+      - huggingface_cache:/cache/huggingface
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
 volumes:
   postgres_data:
     name: semsearch-postgres-data
   qdrant_data:
     name: semsearch-qdrant-data
+  huggingface_cache:
+    name: semsearch-huggingface-cache
 
 networks:
   default:
