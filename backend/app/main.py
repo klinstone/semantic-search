@@ -10,9 +10,11 @@ from qdrant_client.models import Distance, VectorParams
 from app.api.documents import router as documents_router
 from app.api.errors import register_exception_handlers
 from app.api.health import router as health_router
+from app.api.search import router as search_router
 from app.config import settings
 from app.embedding import Embedder
 from app.ingestion.pipeline import IngestionService
+from app.search.service import SearchService
 
 logging.basicConfig(
     level=settings.app_log_level,
@@ -86,14 +88,19 @@ async def lifespan(app: FastAPI):
     _ensure_qdrant_collection(qdrant)
     app.state.qdrant = qdrant
 
-    # Сервис ингеста — синглтон. Тяжёлых ресурсов сам не держит, тяжесть
-    # в эмбеддере. БД-сессия и qdrant-клиент передаются на каждый вызов.
+    # Сервисы — синглтоны. Тяжёлых ресурсов сами не держат, тяжесть в
+    # эмбеддере и Qdrant-клиенте. БД-сессия и qdrant-клиент передаются
+    # на каждый вызов.
     app.state.ingestion = IngestionService(
         embedder=embedder,
         target_tokens=settings.chunk_target_tokens,
         overlap_tokens=settings.chunk_overlap_tokens,
         collection_name=settings.qdrant_collection,
         upload_dir=settings.upload_dir,
+    )
+    app.state.search = SearchService(
+        embedder=embedder,
+        collection_name=settings.qdrant_collection,
     )
 
     yield
@@ -122,3 +129,4 @@ register_exception_handlers(app)
 
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(documents_router, prefix="/api/v1")
+app.include_router(search_router, prefix="/api/v1")

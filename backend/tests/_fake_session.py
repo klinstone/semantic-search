@@ -3,11 +3,14 @@
 Поддерживает только те операции, которые использует прикладной код:
 get / add / add_all / delete / commit / rollback / close,
 а также execute() для DELETE и SELECT-запросов вида
-``select(Model).where(col == value).order_by(col[.desc()]).limit(L).offset(O)``
-и ``select(func.count()).select_from(Model).where(...)``.
+``select(Model).where(predicate).order_by(col[.desc()]).limit(L).offset(O)``
+и ``select(func.count()).select_from(Model).where(predicate)``.
 
-Назначение — unit-тесты ОРКЕСТРАЦИИ (handlers, pipeline). Полное
-поведение SQLAlchemy не воспроизводится: транзакционная семантика
+В where поддерживается конъюнкция из ``col == value`` и ``col.in_(values)``.
+Этого достаточно для всех текущих SELECT/DELETE прикладного кода.
+
+Назначение — unit-тесты ОРКЕСТРАЦИИ (handlers, pipeline, search).
+Полное поведение SQLAlchemy не воспроизводится: транзакционная семантика
 упрощена до уровня "pending до commit, потом отражено в storage".
 """
 from __future__ import annotations
@@ -16,6 +19,7 @@ from collections import defaultdict
 from typing import Any
 
 from sqlalchemy.sql import Delete, Select
+from sqlalchemy.sql import operators as sql_ops
 from sqlalchemy.sql.functions import count as func_count
 
 from app.models.chunk import Chunk
@@ -108,9 +112,9 @@ class FakeSession:
     def _execute_delete(self, stmt: Delete) -> _Result:
         table = stmt.table
         model = _model_for_table(table)
-        criteria = _eq_criteria(stmt.whereclause)
+        predicate = _build_predicate(stmt.whereclause)
         for pk, obj in list(self._storage[model].items()):
-            if _matches(obj, criteria):
+            if predicate(obj):
                 self._pending_deletes.append((model, pk))
         return _Result([])
 
@@ -136,19 +140,15 @@ class FakeSession:
                 )
             model = col_descs[0]["entity"]
 
-        criteria = _eq_criteria(stmt.whereclause)
-        rows = [
-            obj for obj in self._storage[model].values()
-            if _matches(obj, criteria)
-        ]
+        predicate = _build_predicate(stmt.whereclause)
+        rows = [obj for obj in self._storage[model].values() if predicate(obj)]
 
         if is_count:
             return _Result([len(rows)])
 
-        # ORDER BY: поддерживаем только одиночные UnaryExpression (col.desc())
-        # и Column-сортировки по возрастанию. Множественные order_by
-        # обрабатываются последовательно; стабильность сохраняется через
-        # порядок применения.
+        # ORDER BY: поддерживаем UnaryExpression (col.desc()) и обычные Column
+        # (по возрастанию). Множественные order_by обрабатываются от последнего
+        # к первому, благодаря стабильности sort.
         for clause in reversed(stmt._order_by_clauses):
             col_name, descending = _order_key(clause)
             rows.sort(key=lambda o: getattr(o, col_name), reverse=descending)
@@ -188,24 +188,35 @@ def _model_for_table(table) -> type:
     return model
 
 
-def _eq_criteria(where) -> dict[str, object]:
-    """Распаковывает простую конъюнкцию col == value из whereclause."""
+def _build_predicate(where):
+    """Превращает whereclause SQLAlchemy в callable: object → bool.
+
+    Поддерживается конъюнкция простых сравнений: col == val и col IN (...).
+    """
     if where is None:
-        return {}
+        return lambda _obj: True
+
     clauses = getattr(where, "clauses", [where])
-    criteria: dict[str, object] = {}
+    predicates = []
     for clause in clauses:
         col = getattr(clause.left, "key", None)
-        right = clause.right
-        val = getattr(right, "value", None)
         if col is None:
             raise NotImplementedError(f"FakeSession: cannot interpret {clause!r}")
-        criteria[col] = val
-    return criteria
+        op = getattr(clause, "operator", None)
+        right = clause.right
+        val = getattr(right, "value", None)
 
+        if op is sql_ops.in_op:
+            allowed = set(val) if val is not None else set()
+            predicates.append(lambda obj, c=col, s=allowed: getattr(obj, c) in s)
+        else:
+            # eq и всё остальное обрабатываем как ==.
+            predicates.append(lambda obj, c=col, v=val: getattr(obj, c) == v)
 
-def _matches(obj, criteria: dict[str, object]) -> bool:
-    return all(getattr(obj, k) == v for k, v in criteria.items())
+    def combined(obj):
+        return all(p(obj) for p in predicates)
+
+    return combined
 
 
 def _order_key(clause) -> tuple[str, bool]:

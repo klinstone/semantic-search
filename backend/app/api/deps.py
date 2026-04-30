@@ -8,6 +8,7 @@ from qdrant_client import QdrantClient
 
 from app.embedding import Embedder
 from app.ingestion.pipeline import IngestionService
+from app.search.service import SearchService
 
 
 def get_embedder(request: Request) -> Embedder:
@@ -20,3 +21,7 @@ def get_qdrant(request: Request) -> QdrantClient:
 
 def get_ingestion_service(request: Request) -> IngestionService:
     return request.app.state.ingestion
+
+
+def get_search_service(request: Request) -> SearchService:
+    return request.app.state.search
