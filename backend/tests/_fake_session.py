@@ -1,18 +1,47 @@
-"""Минимальная in-memory замена SQLAlchemy Session для тестов пайплайна.
+"""Минимальная in-memory замена SQLAlchemy Session для тестов.
 
-Эмулирует только те операции, которые использует IngestionService:
-get(Model, pk), add(obj), add_all(objs), commit(), rollback(),
-execute(delete(...).where(...)). Этого достаточно для интеграционных
-тестов оркестрации; полное поведение SQLAlchemy не воспроизводится.
+Поддерживает только те операции, которые использует прикладной код:
+get / add / add_all / delete / commit / rollback / close,
+а также execute() для DELETE и SELECT-запросов вида
+``select(Model).where(col == value).order_by(col[.desc()]).limit(L).offset(O)``
+и ``select(func.count()).select_from(Model).where(...)``.
+
+Назначение — unit-тесты ОРКЕСТРАЦИИ (handlers, pipeline). Полное
+поведение SQLAlchemy не воспроизводится: транзакционная семантика
+упрощена до уровня "pending до commit, потом отражено в storage".
 """
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
-from sqlalchemy.sql import Delete
+from sqlalchemy.sql import Delete, Select
+from sqlalchemy.sql.functions import count as func_count
 
 from app.models.chunk import Chunk
 from app.models.document import Document
+
+
+class _Result:
+    """Эмуляция Result/ScalarResult, достаточная для .scalars().all(),
+    .scalar_one(), .scalar(), .all()."""
+
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = rows
+
+    def scalars(self) -> _Result:
+        return self
+
+    def all(self) -> list[Any]:
+        return list(self._rows)
+
+    def scalar_one(self) -> Any:
+        if len(self._rows) != 1:
+            raise RuntimeError(f"scalar_one expected 1 row, got {len(self._rows)}")
+        return self._rows[0]
+
+    def scalar(self) -> Any:
+        return self._rows[0] if self._rows else None
 
 
 class FakeSession:
@@ -20,14 +49,12 @@ class FakeSession:
         # storage[Model] = {pk: obj}
         self._storage: dict[type, dict] = defaultdict(dict)
         # Незакоммиченные изменения за текущую "транзакцию".
-        # На MVP это просто список tombstone-операций add/delete для
-        # отката через rollback().
         self._pending_adds: list[object] = []
         self._pending_deletes: list[tuple[type, object]] = []
         self.commits = 0
         self.rollbacks = 0
 
-    # ---- public Session API used by pipeline ----
+    # ---- Session API used by application code ----
 
     def get(self, model: type, pk):
         return self._storage[model].get(pk)
@@ -38,17 +65,21 @@ class FakeSession:
     def add_all(self, objs) -> None:
         self._pending_adds.extend(objs)
 
+    def delete(self, obj) -> None:
+        # Аналог Session.delete(obj) — помечает на удаление до commit.
+        self._pending_deletes.append((type(obj), obj.id))
+        # Эмуляция CASCADE через FK для связки Document → Chunk.
+        if isinstance(obj, Document):
+            for chunk_id, chunk in list(self._storage[Chunk].items()):
+                if chunk.document_id == obj.id:
+                    self._pending_deletes.append((Chunk, chunk_id))
+
     def execute(self, stmt):
-        if not isinstance(stmt, Delete):
-            raise NotImplementedError("FakeSession.execute supports only DELETE")
-        table = stmt.table
-        model = _model_for_table(table)
-        # Простейшая поддержка: WHERE column == value.
-        # Снимаем фильтр, перебирая текущие строки и сверяя поля.
-        criteria = _extract_eq_criteria(stmt)
-        for pk, obj in list(self._storage[model].items()):
-            if all(getattr(obj, col) == val for col, val in criteria.items()):
-                self._pending_deletes.append((model, pk))
+        if isinstance(stmt, Delete):
+            return self._execute_delete(stmt)
+        if isinstance(stmt, Select):
+            return self._execute_select(stmt)
+        raise NotImplementedError(f"FakeSession.execute: unsupported {type(stmt).__name__}")
 
     def commit(self) -> None:
         for obj in self._pending_adds:
@@ -65,8 +96,71 @@ class FakeSession:
         self._pending_deletes.clear()
         self.rollbacks += 1
 
+    def refresh(self, obj) -> None:
+        # No-op: после add+commit объект уже идентичен записи в storage.
+        return None
+
     def close(self) -> None:
         self.rollback()
+
+    # ---- internal: SELECT/DELETE evaluators ----
+
+    def _execute_delete(self, stmt: Delete) -> _Result:
+        table = stmt.table
+        model = _model_for_table(table)
+        criteria = _eq_criteria(stmt.whereclause)
+        for pk, obj in list(self._storage[model].items()):
+            if _matches(obj, criteria):
+                self._pending_deletes.append((model, pk))
+        return _Result([])
+
+    def _execute_select(self, stmt: Select) -> _Result:
+        # Выбираем источник: либо select(Model), либо select(count()).select_from(Model).
+        col_descs = stmt.column_descriptions
+        is_count = (
+            len(col_descs) == 1
+            and isinstance(col_descs[0]["expr"], func_count)
+        )
+
+        if is_count:
+            from_tables = stmt.get_final_froms()
+            if len(from_tables) != 1:
+                raise NotImplementedError(
+                    "FakeSession select-count expects exactly one FROM"
+                )
+            model = _model_for_table(from_tables[0])
+        else:
+            if len(col_descs) != 1 or col_descs[0]["entity"] is None:
+                raise NotImplementedError(
+                    "FakeSession select expects a single ORM entity"
+                )
+            model = col_descs[0]["entity"]
+
+        criteria = _eq_criteria(stmt.whereclause)
+        rows = [
+            obj for obj in self._storage[model].values()
+            if _matches(obj, criteria)
+        ]
+
+        if is_count:
+            return _Result([len(rows)])
+
+        # ORDER BY: поддерживаем только одиночные UnaryExpression (col.desc())
+        # и Column-сортировки по возрастанию. Множественные order_by
+        # обрабатываются последовательно; стабильность сохраняется через
+        # порядок применения.
+        for clause in reversed(stmt._order_by_clauses):
+            col_name, descending = _order_key(clause)
+            rows.sort(key=lambda o: getattr(o, col_name), reverse=descending)
+
+        offset = _scalar_clause(stmt._offset_clause) or 0
+        limit = _scalar_clause(stmt._limit_clause)
+        if limit is not None:
+            rows = rows[offset:offset + limit]
+        elif offset:
+            rows = rows[offset:]
+
+        return _Result(rows)
 
     # ---- helpers for tests ----
 
@@ -77,7 +171,7 @@ class FakeSession:
         return len(self._storage[model])
 
     def seed(self, obj) -> None:
-        """Кладёт объект в storage в обход pending — для арenge-фазы тестов."""
+        """Кладёт объект в storage в обход pending — для arrange-фазы тестов."""
         self._storage[type(obj)][obj.id] = obj
 
 
@@ -94,17 +188,13 @@ def _model_for_table(table) -> type:
     return model
 
 
-def _extract_eq_criteria(stmt: Delete) -> dict[str, object]:
-    """Распаковывает простые WHERE col == value из DELETE-запроса."""
-    criteria: dict[str, object] = {}
-    where = stmt.whereclause
+def _eq_criteria(where) -> dict[str, object]:
+    """Распаковывает простую конъюнкцию col == value из whereclause."""
     if where is None:
-        return criteria
-    # SQLAlchemy представляет цепочку AND как BooleanClauseList; в нашем
-    # пайплайне фильтр всегда одиночный (document_id == X).
+        return {}
     clauses = getattr(where, "clauses", [where])
+    criteria: dict[str, object] = {}
     for clause in clauses:
-        # BinaryExpression: clause.left = Column, clause.right = BindParameter
         col = getattr(clause.left, "key", None)
         right = clause.right
         val = getattr(right, "value", None)
@@ -112,3 +202,32 @@ def _extract_eq_criteria(stmt: Delete) -> dict[str, object]:
             raise NotImplementedError(f"FakeSession: cannot interpret {clause!r}")
         criteria[col] = val
     return criteria
+
+
+def _matches(obj, criteria: dict[str, object]) -> bool:
+    return all(getattr(obj, k) == v for k, v in criteria.items())
+
+
+def _order_key(clause) -> tuple[str, bool]:
+    """Возвращает (имя_колонки, descending) для разных форм ORDER BY."""
+    descending = False
+    element = clause
+    # UnaryExpression от .desc()/.asc().
+    if hasattr(clause, "modifier") and clause.modifier is not None:
+        modifier_name = getattr(clause.modifier, "__name__", "")
+        descending = modifier_name == "desc_op"
+        element = clause.element
+    col_name = getattr(element, "key", None)
+    if col_name is None:
+        raise NotImplementedError(f"FakeSession: cannot order by {clause!r}")
+    return col_name, descending
+
+
+def _scalar_clause(clause) -> int | None:
+    """LIMIT/OFFSET у SQLA — это BindParameter с .value либо None."""
+    if clause is None:
+        return None
+    val = getattr(clause, "value", None)
+    if val is None:
+        return None
+    return int(val)

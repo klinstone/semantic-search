@@ -1,9 +1,11 @@
 """HTTP API для документов."""
 import logging
+from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, Response, UploadFile
 from qdrant_client import QdrantClient
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_ingestion_service, get_qdrant
@@ -12,9 +14,15 @@ from app.config import settings
 from app.ingestion.pipeline import IndexingError, IngestionService
 from app.models.document import Document
 from app.models.enums import DocumentStatus
-from app.schemas.document import DocumentResponse
+from app.schemas.document import (
+    DocumentDetail,
+    DocumentList,
+    DocumentListItem,
+    DocumentResponse,
+)
 from app.schemas.errors import ErrorResponse
 from app.storage.database import SessionLocal, get_db
+from app.storage.documents import delete_document_data
 from app.storage.files import (
     ALLOWED_EXTENSIONS,
     EXT_TO_MIME,
@@ -26,6 +34,10 @@ from app.storage.files import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["documents"])
+
+# Лимиты пагинации фиксированы спецификацией.
+LIST_DEFAULT_LIMIT = 20
+LIST_MAX_LIMIT = 100
 
 
 def _validate_upload(file: UploadFile) -> None:
@@ -106,20 +118,17 @@ def _run_indexing(
     Создаёт собственную сессию (request scope уже закрыт к моменту запуска
     задачи) и делегирует работу IngestionService. IndexingError ловим
     тут — пайплайн уже зафиксировал статус failed в БД, дополнительных
-    действий не требуется. Любое необработанное исключение из task
-    starlette просто залогирует, поэтому мы не должны позволять
-    необработанному всплыть и потерять статус документа.
+    действий не требуется.
     """
     db = SessionLocal()
     try:
         ingestion.index_document(document_id, db, qdrant)
     except IndexingError:
-        # Статус документа уже выставлен в FAILED внутри пайплайна.
-        # Логирование уже сделано там же.
+        # Статус уже выставлен в FAILED внутри пайплайна.
         pass
     except Exception:
         # Подстраховка от исключений, которые пайплайн не превратил
-        # в IndexingError (сам не справился со своим catch-all).
+        # в IndexingError.
         logger.exception("background indexing crashed for document %s", document_id)
     finally:
         db.close()
@@ -144,7 +153,7 @@ def upload_document(
     qdrant: QdrantClient = Depends(get_qdrant),
 ) -> DocumentResponse:
     """Загружает документ. Возвращает 201 со статусом pending; индексация
-    запускается в фоне. Опрос статуса — через GET /documents/{id} (этап 9).
+    запускается в фоне. Опрос статуса — через GET /documents/{id}.
     """
     _validate_upload(file)
 
@@ -195,3 +204,104 @@ def upload_document(
         document.mime_type,
     )
     return DocumentResponse.model_validate(document)
+
+
+@router.get(
+    "/documents",
+    response_model=DocumentList,
+    summary="List documents",
+)
+def list_documents(
+    limit: Annotated[int, Query(ge=1, le=LIST_MAX_LIMIT)] = LIST_DEFAULT_LIMIT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    status: Annotated[DocumentStatus | None, Query()] = None,
+    db: Session = Depends(get_db),
+) -> DocumentList:
+    """Возвращает страницу документов, отсортированных по uploaded_at DESC.
+
+    Параметры пагинации жёсткие: limit ∈ [1, 100], offset ≥ 0. Невалидные
+    значения отдают 422 от FastAPI до входа в обработчик. status, если
+    задан, сужает выдачу до документов с этим статусом.
+    """
+    base = select(Document)
+    count_base = select(func.count()).select_from(Document)
+
+    if status is not None:
+        base = base.where(Document.status == status)
+        count_base = count_base.where(Document.status == status)
+
+    # uploaded_at DESC — основная сортировка из спецификации; id — tie-breaker
+    # для детерминированного порядка между документами с одинаковым
+    # значением uploaded_at (например, batch-загрузка).
+    stmt = (
+        base.order_by(Document.uploaded_at.desc(), Document.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    items = db.execute(stmt).scalars().all()
+    total = db.execute(count_base).scalar_one()
+
+    return DocumentList(
+        items=[DocumentListItem.model_validate(d) for d in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/documents/{document_id}",
+    response_model=DocumentDetail,
+    responses={404: {"model": ErrorResponse, "description": "Document not found"}},
+    summary="Get document details",
+)
+def get_document(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+) -> DocumentDetail:
+    """Полная информация о документе включая статус индексации и сообщение
+    об ошибке (если status=failed). Используется фронтом для polling'а.
+    """
+    document = db.get(Document, document_id)
+    if document is None:
+        raise AppError(
+            code="NOT_FOUND",
+            message=f"Document {document_id} not found",
+            status_code=404,
+        )
+    return DocumentDetail.model_validate(document)
+
+
+@router.delete(
+    "/documents/{document_id}",
+    status_code=204,
+    responses={404: {"model": ErrorResponse, "description": "Document not found"}},
+    summary="Delete a document",
+)
+def delete_document(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    qdrant: QdrantClient = Depends(get_qdrant),
+) -> Response:
+    """Удаляет документ полностью: точки в Qdrant → запись в БД (CASCADE
+    уберёт чанки) → файл с диска. Порядок зафиксирован в спецификации API.
+
+    На повторный DELETE отвечает 404 (запись уже удалена). 500 возможен,
+    если упал Qdrant — клиент может ретраить, операция идемпотентна.
+    """
+    document = db.get(Document, document_id)
+    if document is None:
+        raise AppError(
+            code="NOT_FOUND",
+            message=f"Document {document_id} not found",
+            status_code=404,
+        )
+
+    delete_document_data(
+        document=document,
+        db=db,
+        qdrant=qdrant,
+        collection_name=settings.qdrant_collection,
+        upload_dir=settings.upload_dir,
+    )
+    return Response(status_code=204)
