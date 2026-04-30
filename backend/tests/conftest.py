@@ -1,6 +1,4 @@
 """Общие фикстуры для тестов."""
-import io
-
 import pytest
 from docx import Document as DocxDocument
 from pypdf import PdfWriter
@@ -37,14 +35,9 @@ def make_pdf(tmp_path):
     чтобы pypdf на чтении его извлёк обратно.
     """
     from pypdf.generic import (
-        ArrayObject,
         DecodedStreamObject,
         DictionaryObject,
-        FloatObject,
-        IndirectObject,
         NameObject,
-        NumberObject,
-        TextStringObject,
     )
 
     def _make(name: str, pages_text: list[str]):
@@ -76,3 +69,15 @@ def make_pdf(tmp_path):
         return path
 
     return _make
+
+
+@pytest.fixture(scope="session")
+def e5_tokenizer():
+    """Реальный токенайзер intfloat/multilingual-e5-base.
+
+    При первом запуске скачивается в HF-кэш (~5 МБ файлов токенайзера,
+    веса модели не подгружаются). Сессионная область — чтобы избежать
+    повторной загрузки между тестами.
+    """
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained("intfloat/multilingual-e5-base")

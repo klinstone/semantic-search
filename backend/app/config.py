@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     embedding_model: str = "intfloat/multilingual-e5-base"
     embedding_dim: int = 768
 
+    # --- Chunking ---
+    # Размер чанка в токенах целевой модели. Запас от 512 закрывает
+    # префикс "passage: " и спецтокены [CLS]/[SEP].
+    chunk_target_tokens: int = 400
+    chunk_overlap_tokens: int = 50
+
     # --- Storage ---
     upload_dir: Path = Path("/data/uploads")
     max_upload_size_mb: int = 10
