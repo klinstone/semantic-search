@@ -11,6 +11,8 @@ from app.api.documents import router as documents_router
 from app.api.errors import register_exception_handlers
 from app.api.health import router as health_router
 from app.config import settings
+from app.embedding import Embedder
+from app.ingestion.pipeline import IngestionService
 
 logging.basicConfig(
     level=settings.app_log_level,
@@ -50,6 +52,23 @@ def _ensure_qdrant_collection(client: QdrantClient) -> None:
     logger.info("qdrant collection %s ready (dim=%d)", name, actual_dim)
 
 
+def _build_embedder() -> Embedder:
+    """Загружает модель и сверяет её фактическую размерность с конфигом.
+
+    Несовпадение возможно при смене EMBEDDING_MODEL без обновления
+    EMBEDDING_DIM — лучше упасть на старте, чем складывать в Qdrant
+    векторы неправильной длины и ловить ошибки в рантайме.
+    """
+    embedder = Embedder(settings.embedding_model)
+    if embedder.dim != settings.embedding_dim:
+        raise RuntimeError(
+            f"model {settings.embedding_model} produces dim={embedder.dim}, "
+            f"but EMBEDDING_DIM={settings.embedding_dim}"
+        )
+    embedder.warmup()
+    return embedder
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("starting up (env=%s, version=%s)", settings.app_env, settings.app_version)
@@ -58,9 +77,24 @@ async def lifespan(app: FastAPI):
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     logger.info("upload directory: %s", settings.upload_dir)
 
+    # Эмбеддер до Qdrant: если модель не подходит к конфигу, нет смысла
+    # трогать коллекцию — упасть нужно как можно раньше.
+    embedder = _build_embedder()
+    app.state.embedder = embedder
+
     qdrant = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
     _ensure_qdrant_collection(qdrant)
     app.state.qdrant = qdrant
+
+    # Сервис ингеста — синглтон. Тяжёлых ресурсов сам не держит, тяжесть
+    # в эмбеддере. БД-сессия и qdrant-клиент передаются на каждый вызов.
+    app.state.ingestion = IngestionService(
+        embedder=embedder,
+        target_tokens=settings.chunk_target_tokens,
+        overlap_tokens=settings.chunk_overlap_tokens,
+        collection_name=settings.qdrant_collection,
+        upload_dir=settings.upload_dir,
+    )
 
     yield
 

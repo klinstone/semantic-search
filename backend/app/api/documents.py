@@ -1,14 +1,15 @@
 """HTTP API для документов."""
 import logging
-import time
-from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
+from qdrant_client import QdrantClient
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_ingestion_service, get_qdrant
 from app.api.errors import AppError
 from app.config import settings
+from app.ingestion.pipeline import IndexingError, IngestionService
 from app.models.document import Document
 from app.models.enums import DocumentStatus
 from app.schemas.document import DocumentResponse
@@ -95,34 +96,31 @@ def _validate_upload(file: UploadFile) -> None:
         )
 
 
-def _stub_index_document(document_id: UUID) -> None:
-    """ЗАГЛУШКА ingestion-пайплайна.
+def _run_indexing(
+    document_id: UUID,
+    ingestion: IngestionService,
+    qdrant: QdrantClient,
+) -> None:
+    """Точка входа фоновой задачи.
 
-    На этапе 4 просто ждёт 2 секунды и переводит документ в indexed.
-    Реальный пайплайн (parsing → chunking → embedding → Qdrant + DB)
-    будет на этапе 8.
-
-    Запускается через BackgroundTasks.add_task(...) — в threadpool,
-    после отправки HTTP-ответа клиенту.
+    Создаёт собственную сессию (request scope уже закрыт к моменту запуска
+    задачи) и делегирует работу IngestionService. IndexingError ловим
+    тут — пайплайн уже зафиксировал статус failed в БД, дополнительных
+    действий не требуется. Любое необработанное исключение из task
+    starlette просто залогирует, поэтому мы не должны позволять
+    необработанному всплыть и потерять статус документа.
     """
-    logger.info("stub: starting indexing for document %s", document_id)
-    time.sleep(2)
-
-    # Создаём собственную сессию: сессия из request scope уже закрыта.
     db = SessionLocal()
     try:
-        document = db.get(Document, document_id)
-        if document is None:
-            logger.warning("stub: document %s not found", document_id)
-            return
-        document.status = DocumentStatus.INDEXED
-        document.indexed_at = datetime.now(UTC)
-        document.chunks_count = 0  # реальное значение проставится на этапе 8
-        db.commit()
-        logger.info("stub: document %s marked as indexed", document_id)
+        ingestion.index_document(document_id, db, qdrant)
+    except IndexingError:
+        # Статус документа уже выставлен в FAILED внутри пайплайна.
+        # Логирование уже сделано там же.
+        pass
     except Exception:
-        logger.exception("stub: failed to update document %s", document_id)
-        db.rollback()
+        # Подстраховка от исключений, которые пайплайн не превратил
+        # в IndexingError (сам не справился со своим catch-all).
+        logger.exception("background indexing crashed for document %s", document_id)
     finally:
         db.close()
 
@@ -142,6 +140,8 @@ def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    ingestion: IngestionService = Depends(get_ingestion_service),
+    qdrant: QdrantClient = Depends(get_qdrant),
 ) -> DocumentResponse:
     """Загружает документ. Возвращает 201 со статусом pending; индексация
     запускается в фоне. Опрос статуса — через GET /documents/{id} (этап 9).
@@ -184,8 +184,8 @@ def upload_document(
             status_code=500,
         )
 
-    # Шаг 3: фоновая индексация (заглушка, до этапа 8).
-    background_tasks.add_task(_stub_index_document, document_id)
+    # Шаг 3: фоновая индексация.
+    background_tasks.add_task(_run_indexing, document_id, ingestion, qdrant)
 
     logger.info(
         "uploaded document %s: %s (%d bytes, %s)",

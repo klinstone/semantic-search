@@ -1,4 +1,14 @@
 """Общие фикстуры для тестов."""
+# ВАЖНО: env-переменные подкладываются ДО любых импортов из app.*,
+# потому что app.config.Settings() выполняется на импорте app.storage.database
+# и требует POSTGRES_*. В тестах настоящая БД не используется (FakeSession),
+# нужны только проходящие валидацию значения.
+import os
+
+os.environ.setdefault("POSTGRES_USER", "test")
+os.environ.setdefault("POSTGRES_PASSWORD", "test")
+os.environ.setdefault("POSTGRES_DB", "test")
+
 import pytest
 from docx import Document as DocxDocument
 from pypdf import PdfWriter
