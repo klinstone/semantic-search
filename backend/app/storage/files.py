@@ -36,8 +36,12 @@ def check_magic_bytes(mime_type: str, header: bytes) -> bool:
     if mime_type == "text/plain":
         if b"\x00" in header:
             return False
+        # 8-байтовое окно может оборвать UTF-8 последовательность посередине;
+        # игнорируем такие "хвосты" — они не означают, что файл не UTF-8.
+        import codecs
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
         try:
-            header.decode("utf-8", errors="strict")
+            decoder.decode(header, final=False)
             return True
         except UnicodeDecodeError:
             return False
