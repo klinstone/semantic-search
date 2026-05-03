@@ -1,17 +1,6 @@
-"""Конвейер индексации документа: parse → chunk → embed → write.
+"""Пайплайн индексации документов: парсинг → чанкинг → векторизация → сохранение.
 
-Модуль собирает воедино парсер, чанкер и эмбеддер и атомарно записывает
-результат в Postgres + Qdrant. Цель — превратить документ из состояния
-``pending`` в ``indexed`` (или ``failed`` с понятным сообщением).
-
-Источник истины — Postgres (хранит сами тексты чанков, их смещения и
-метаданные). Qdrant — только индекс по векторам; из него ничего нельзя
-восстановить, кроме связи vector ↔ chunk_id. Поэтому порядок записи:
-сначала Postgres, затем Qdrant. При сбое Qdrant вставленные чанки из
-Postgres удаляются (компенсация), документ переводится в ``failed``.
-
-Один и тот же UUID живёт и в ``chunks.id`` (Postgres), и в
-``points[].id`` (Qdrant) — это ключ связки между хранилищами.
+Сначала пишет в Postgres (источник истины), затем в Qdrant (векторный индекс). При сбое Qdrant компенсирует это удалением уже вставленных чанков из Postgres. chunk.id == qdrant point.id — этот UUID связывает два хранилища.
 """
 import logging
 from dataclasses import dataclass
@@ -42,6 +31,7 @@ from app.ingestion.parser import parse_file
 from app.models.chunk import Chunk
 from app.models.document import Document
 from app.models.enums import DocumentStatus
+from app.storage.files import MIME_TO_EXT
 
 logger = logging.getLogger(__name__)
 
@@ -96,24 +86,16 @@ class IngestionService:
         db: Session,
         qdrant: QdrantClient,
     ) -> IndexResult:
-        """Индексирует документ. Бросает IndexingError при сбое.
+        """Индексирует документ. Переходы статусов: pending → processing → indexed|failed.
 
-        Контракт по статусам:
-            pending  → processing → indexed     (успех)
-            pending  → processing → failed      (ошибка содержимого/инфры)
-            *        → failed                   (документа нет/в неверном
-                                                 статусе — лог и выход)
-
-        Метод никогда не оставляет документ в processing после возврата:
-        либо indexed, либо failed.
+        Никогда не оставляет документ в статусе 'processing' после возврата.
+        Выбрасывает IndexingError при сбое (статус уже установлен в 'failed').
         """
         document = db.get(Document, document_id)
         if document is None:
             logger.warning("document %s not found, nothing to index", document_id)
             raise IndexingError(f"document {document_id} not found")
 
-        # Перевод в processing виден через GET /documents/{id} ещё до
-        # окончания работы — пользователь понимает, что задача в работе.
         document.status = DocumentStatus.PROCESSING
         document.error_message = None
         db.commit()
@@ -137,11 +119,10 @@ class IngestionService:
         document_id = document.id
 
         # 1. Извлечение текста из файла.
-        file_path = self._upload_dir / f"{document_id}.{_ext_for_mime(document.mime_type)}"
+        ext = MIME_TO_EXT[document.mime_type]
+        file_path = self._upload_dir / f"{document_id}.{ext}"
         if not file_path.exists():
-            # Файла нет на диске. Считаем ошибкой содержимого (видна
-            # пользователю), а не инфраструктуры — пользователь сможет
-            # перезалить документ.
+            # Отсутствие файла считаем ошибкой для пользователя
             raise CorruptFileError(f"file for document {document_id} not found on disk")
         text = parse_file(file_path, document.mime_type)
         text_length = len(text)
@@ -154,9 +135,6 @@ class IngestionService:
             overlap_tokens=self._overlap_tokens,
         )
         if not chunks:
-            # Парсер вернул что-то непустое, но после нормализации/чанкинга
-            # ничего не осталось — для пользователя это так же бесполезно,
-            # как пустой PDF.
             raise EmptyTextError(f"no chunks produced from {document.filename}")
 
         logger.info(
@@ -164,8 +142,7 @@ class IngestionService:
             document_id, text_length, len(chunks),
         )
 
-        # 3. Векторизация. Делается до записи: если модель упадёт, не
-        #    останется висящих чанков в БД.
+        # 3. Векторизуем до записи — чтобы не осталось сиротских чанков, если модель упадет.
         vectors = self._embedder.embed_passages([ch.text for ch in chunks])
         if len(vectors) != len(chunks):
             # Защита от тихой рассинхронизации между списками.
@@ -173,9 +150,7 @@ class IngestionService:
                 f"embedder returned {len(vectors)} vectors for {len(chunks)} chunks"
             )
 
-        # 4. Идемпотентность: если документ уже частично индексирован
-        #    (повторный запуск, недавний сбой), удаляем старые данные
-        #    из обоих хранилищ перед записью новых.
+        # 4. Очистка любых предыдущих частичных данных (идемпотентная переиндексация).
         self._delete_existing(document_id, db, qdrant)
 
         # 5. Postgres сначала — это источник истины.
@@ -328,19 +303,6 @@ class IngestionService:
             logger.exception(
                 "failed to mark document %s as FAILED", document_id,
             )
-
-
-def _ext_for_mime(mime: str) -> str:
-    """Локальный аналог MIME_TO_EXT, чтобы не тащить зависимость на
-    storage.files в ингест."""
-    if mime == "application/pdf":
-        return "pdf"
-    if mime == "text/plain":
-        return "txt"
-    if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        return "docx"
-    raise UnsupportedFormatError(f"no extension mapping for MIME {mime!r}")
-
 
 __all__ = [
     "IndexingError",
