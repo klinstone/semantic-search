@@ -5,12 +5,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """
-    Конфигурация приложения. Источники в порядке приоритета:
-    1. переменные окружения (передаются из docker compose)
-    2. .env-файл рядом с процессом (для запуска вне контейнера)
-    Регистр имён значения не имеет (case_sensitive=False).
-    """
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -37,17 +31,12 @@ class Settings(BaseSettings):
     qdrant_collection: str = "document_chunks"
 
     # --- Embedding model ---
-    # Размерность ДОЛЖНА соответствовать модели:
-    #   intfloat/multilingual-e5-base   -> 768
-    #   intfloat/multilingual-e5-large  -> 1024
-    #   sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 -> 384
-    # Несовпадение проверяется в lifespan и приводит к падению старта.
+    # Должно совпадать с размерностью модели; проверяется при запуске.
     embedding_model: str = "intfloat/multilingual-e5-base"
     embedding_dim: int = 768
 
     # --- Chunking ---
-    # Размер чанка в токенах целевой модели. Запас от 512 закрывает
-    # префикс "passage: " и спецтокены [CLS]/[SEP].
+    # Размер чанка в токенах модели. Запас от 512 покрывает префикс "passage: " и спецтокены.
     chunk_target_tokens: int = 400
     chunk_overlap_tokens: int = 50
 

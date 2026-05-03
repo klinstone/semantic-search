@@ -10,9 +10,6 @@ from app.ingestion.normalize import normalize_text
 
 logger = logging.getLogger(__name__)
 
-# Form feed как разделитель страниц — стандартное соглашение в Unix
-# и в распространённых текстовых конвертерах. Используется чанкингом
-# для восстановления номера страницы по позиции в тексте.
 PAGE_SEPARATOR = "\f"
 
 

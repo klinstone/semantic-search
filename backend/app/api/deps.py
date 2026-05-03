@@ -1,8 +1,4 @@
-"""Общие зависимости FastAPI-эндпоинтов.
-
-Доступ к синглтонам, инициализированным в lifespan (app.state).
-Использование через Depends() позволяет тестам подменять реализации.
-"""
+"""Зависимости FastAPI (обертки Depends для синглтонов app.state)."""
 from fastapi import Request
 from qdrant_client import QdrantClient
 

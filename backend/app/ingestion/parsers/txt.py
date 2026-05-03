@@ -7,9 +7,7 @@ from app.ingestion.normalize import normalize_text
 
 logger = logging.getLogger(__name__)
 
-# Кодеки, которые пробуем по очереди.
-# UTF-8 покрывает большинство современных файлов, cp1251 — типичная
-# кодировка русскоязычных текстов из Windows-окружений до перехода на UTF-8.
+# Кодировки для проверки по порядку.
 _ENCODINGS_TO_TRY: tuple[str, ...] = ("utf-8", "cp1251")
 
 

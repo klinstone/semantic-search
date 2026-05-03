@@ -3,9 +3,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
 
-# Naming convention для constraints — даёт предсказуемые имена в миграциях.
-# Без неё Alembic может сгенерировать случайные суффиксы, которые усложняют
-# чтение миграций и сравнение между ревизиями.
+# Предсказуемые имена ограничений (constraints) для миграций Alembic.
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
     "uq": "uq_%(table_name)s_%(column_0_name)s",
@@ -21,8 +19,7 @@ class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
-# pool_pre_ping=True — отлавливает разорванные соединения (например, после
-# рестарта postgres-контейнера), пересоздавая их прозрачно для приложения.
+# pool_pre_ping: прозрачное переподключение после обрыва соединения.
 engine = create_engine(
     settings.postgres_dsn,
     pool_pre_ping=True,

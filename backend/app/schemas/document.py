@@ -22,12 +22,7 @@ class DocumentResponse(BaseModel):
 
 
 class DocumentListItem(BaseModel):
-    """Элемент в выдаче GET /documents.
-
-    Не содержит error_message и text_length — они показываются только в
-    детальной выдаче GET /documents/{id}, чтобы список оставался лёгким
-    для пагинированных ответов с большим items.
-    """
+    """Элемент в списке GET /documents."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -51,12 +46,7 @@ class DocumentList(BaseModel):
 
 
 class DocumentDetail(BaseModel):
-    """Полная информация о документе для GET /documents/{id}.
-
-    error_message заполняется при status=failed, в остальных случаях None.
-    text_length — длина извлечённого текста в символах, NULL пока документ
-    не проиндексирован.
-    """
+    """Полная информация о документе для GET /documents/{id}."""
 
     model_config = ConfigDict(from_attributes=True)
 

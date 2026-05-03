@@ -7,7 +7,6 @@ ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     PATH="/opt/venv/bin:$PATH"
 
-# libmagic1 — пригодится на этапе 4 для валидации файлов по magic bytes.
 # curl — для healthcheck'а из docker compose.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \

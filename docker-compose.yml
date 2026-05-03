@@ -54,13 +54,14 @@ services:
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-document_chunks}
-      # Embedding model — фиксируется здесь, lifespan сверяет dim коллекции
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-base}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
       # Storage
       UPLOAD_DIR: /data/uploads
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-10}
+      # Сохраняем кэш моделей HuggingFace между пересозданиями контейнера.
       HF_HOME: /cache/huggingface
+      # Прочее
       APP_ENV: ${APP_ENV:-development}
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
     volumes:
@@ -68,6 +69,7 @@ services:
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
       - ./data/uploads:/data/uploads
+      # Кэш моделей HuggingFace (сохраняется при пересоздании контейнеров).
       - huggingface_cache:/cache/huggingface
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
@@ -79,11 +81,30 @@ services:
       retries: 5
       start_period: 30s
 
+  frontend:
+    image: node:20-alpine
+    container_name: semsearch-frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    environment:
+      # Обязательно для отслеживания изменений файлов на bind mount в Windows/WSL2.
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      VITE_BACKEND_URL: http://backend:8000
+    volumes:
+      - ./frontend:/app
+      # Изолируем Linux node_modules от хоста Windows.
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "127.0.0.1:5173:5173"
+
 volumes:
   postgres_data:
     name: semsearch-postgres-data
   qdrant_data:
     name: semsearch-qdrant-data
+  frontend_node_modules:
+    name: semsearch-frontend-node-modules
   huggingface_cache:
     name: semsearch-huggingface-cache
 

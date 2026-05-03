@@ -35,7 +35,6 @@ from app.storage.files import (
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["documents"])
 
-# Лимиты пагинации фиксированы спецификацией.
 LIST_DEFAULT_LIMIT = 20
 LIST_MAX_LIMIT = 100
 

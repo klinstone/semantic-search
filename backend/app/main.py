@@ -24,14 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_qdrant_collection(client: QdrantClient) -> None:
-    """
-    Идемпотентно гарантирует, что коллекция document_chunks существует
-    и имеет правильную размерность.
-
-    Если коллекция уже есть, но dim не совпадает с конфигом — это значит,
-    что модель эмбеддингов поменяли без переиндексации. Падаем с понятной
-    ошибкой, а не молча принимаем чужие векторы.
-    """
+    """Убеждается, что коллекция Qdrant существует и имеет ожидаемую размерность векторов."""
     name = settings.qdrant_collection
     expected_dim = settings.embedding_dim
 
@@ -55,12 +48,7 @@ def _ensure_qdrant_collection(client: QdrantClient) -> None:
 
 
 def _build_embedder() -> Embedder:
-    """Загружает модель и сверяет её фактическую размерность с конфигом.
-
-    Несовпадение возможно при смене EMBEDDING_MODEL без обновления
-    EMBEDDING_DIM — лучше упасть на старте, чем складывать в Qdrant
-    векторы неправильной длины и ловить ошибки в рантайме.
-    """
+    """Загружает модель эмбеддингов и сверяет ее размерность с конфигом."""
     embedder = Embedder(settings.embedding_model)
     if embedder.dim != settings.embedding_dim:
         raise RuntimeError(
@@ -75,12 +63,10 @@ def _build_embedder() -> Embedder:
 async def lifespan(app: FastAPI):
     logger.info("starting up (env=%s, version=%s)", settings.app_env, settings.app_version)
 
-    # Создаём директорию для загрузок, если её нет.
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     logger.info("upload directory: %s", settings.upload_dir)
 
-    # Эмбеддер до Qdrant: если модель не подходит к конфигу, нет смысла
-    # трогать коллекцию — упасть нужно как можно раньше.
+    # Сначала эмбеддер — быстро падаем, если модель и конфиг не совпадают.
     embedder = _build_embedder()
     app.state.embedder = embedder
 
@@ -88,9 +74,6 @@ async def lifespan(app: FastAPI):
     _ensure_qdrant_collection(qdrant)
     app.state.qdrant = qdrant
 
-    # Сервисы — синглтоны. Тяжёлых ресурсов сами не держат, тяжесть в
-    # эмбеддере и Qdrant-клиенте. БД-сессия и qdrant-клиент передаются
-    # на каждый вызов.
     app.state.ingestion = IngestionService(
         embedder=embedder,
         target_tokens=settings.chunk_target_tokens,
@@ -115,7 +98,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS для разработки фронта. В проде origins сужают до конкретных доменов.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

@@ -1,17 +1,6 @@
-"""Токенный чанкер для подготовки текста к индексации.
+"""Чанкер текста с учетом токенов.
 
-Алгоритм: рекурсивное разбиение текста по структурным разделителям
-(\\n\\n -> \\n -> ". " -> " "), затем жадная склейка получившихся "атомов"
-в чанки, ограниченные `target_tokens`. Между соседними чанками сохраняется
-перекрытие около `overlap_tokens` для устойчивости поиска на границах.
-
-Длина считается через токенайзер целевой модели эмбеддингов: счёт по
-символам у мультиязычных моделей (e5/MiniLM) даёт большую погрешность и
-приводит к тихим обрезаниям на длинных русских чанках.
-
-Form-feed (\\f) трактуется как граница страницы (PDF-парсер расставляет
-их между страницами). Чанки никогда не пересекают \\f и получают
-`metadata={"page": N}` с 1-based номером страницы.
+Разбивает текст на перекрывающиеся чанки, ограниченные target_tokens, используя токенизатор модели. Символ form-feed (\f) считается жесткой границей страницы — чанки ее не пересекают.
 """
 import logging
 from collections.abc import Sequence
@@ -23,27 +12,21 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 logger = logging.getLogger(__name__)
 
-# Подобраны под intfloat/multilingual-e5-base (контекст 512). Запас закрывает
-# префикс "passage: " (~2 токена), спецтокены [CLS]/[SEP] (2 токена) и шум
-# на разделителях между атомами.
+# Настроено под e5-base (контекст 512). Запас покрывает префикс и спецтокены.
 DEFAULT_TARGET_TOKENS = 400
 DEFAULT_OVERLAP_TOKENS = 50
 
-# Маркер границы страниц от PDF-парсера. Чанки не пересекают это значение.
 PAGE_SEPARATOR = "\f"
 
-# Разделители от наиболее структурных к наименее. Пробел — последний шанс
-# до жёсткого разреза по токенам.
+# Разделители в порядке убывания структурной значимости.
 DEFAULT_SEPARATORS: tuple[str, ...] = ("\n\n", "\n", ". ", " ")
 
 
 @dataclass(frozen=True)
 class TextChunk:
-    """Один чанк, готовый к векторизации.
+    """Один чанк со смещениями символов в исходном тексте.
 
-    `char_start` / `char_end` — смещения в исходном тексте (полученном из
-    парсера, до удаления form-feed). Инвариант: `text == original[char_start:char_end]`
-    для непустых чанков, не пересекающих границу страницы.
+    Инвариант: original[char_start:char_end] == text.
     """
     text: str
     char_start: int
@@ -54,7 +37,7 @@ class TextChunk:
 
 @dataclass(frozen=True)
 class _Atom:
-    """Внутреннее представление неделимого фрагмента, влезающего в бюджет."""
+    """Неделимый фрагмент, который укладывается в лимит токенов."""
     start: int
     end: int
     tokens: int
@@ -62,11 +45,7 @@ class _Atom:
 
 @lru_cache(maxsize=4)
 def get_tokenizer(model_name: str) -> PreTrainedTokenizerBase:
-    """Загружает и кэширует токенайзер модели.
-
-    Скачиваются только файлы токенайзера (несколько МБ); веса модели не
-    подгружаются. Кэш на диске задаётся через переменную HF_HOME.
-    """
+    """Загружает и кэширует токенизатор модели (веса не скачиваются)."""
     logger.info("loading tokenizer %s", model_name)
     return AutoTokenizer.from_pretrained(model_name)
 
@@ -78,12 +57,7 @@ def chunk_text(
         overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
         separators: Sequence[str] = DEFAULT_SEPARATORS,
 ) -> list[TextChunk]:
-    """Делит нормализованный текст на перекрывающиеся чанки.
-
-    Ожидает на вход результат `app.ingestion.normalize.normalize_text`.
-    Возвращает чанки в порядке появления в исходном тексте; чанк не
-    содержит символа `\\f`.
-    """
+    """Разбивает нормализованный текст на перекрывающиеся чанки. Ожидает на вход результат normalize_text."""
     if target_tokens <= 0:
         raise ValueError("target_tokens must be positive")
     if overlap_tokens < 0 or overlap_tokens >= target_tokens:
@@ -156,8 +130,7 @@ def _chunk_segment(
 
 
 def _count_tokens(text: str, tokenizer: PreTrainedTokenizerBase) -> int:
-    # add_special_tokens=False: спецтокены добавляются моделью на этапе
-    # эмбеддинга вместе с префиксом "passage: " / "query: ".
+    # add_special_tokens=False: спецтокены добавляются позже самой моделью вместе с ролевым префиксом.
     return len(tokenizer.encode(text, add_special_tokens=False))
 
 
@@ -223,11 +196,7 @@ def _split_by_tokens(
         tokenizer: PreTrainedTokenizerBase,
         max_tokens: int,
 ) -> list[_Atom]:
-    """Жёсткий разрез по токенам — fallback для строк без разделителей.
-
-    Требует "fast" токенайзер (return_offsets_mapping). Все современные
-    HF-токенайзеры таковы по умолчанию.
-    """
+    """Жесткий разрез по токенам. Fallback для строк без разделителей."""
     encoding = tokenizer(
         text,
         add_special_tokens=False,
@@ -285,7 +254,6 @@ def _pack_atoms(
         chunk_end = atoms[j - 1].end
         chunk_text_value = segment[chunk_start - segment_offset:chunk_end - segment_offset]
 
-        # Точный счёт с учётом разделителей между атомами в исходном тексте.
         actual_tokens = _count_tokens(chunk_text_value, tokenizer)
 
         chunks.append(TextChunk(
@@ -299,9 +267,7 @@ def _pack_atoms(
         if j >= n:
             break
 
-        # Откатываемся назад от j на ~overlap_tokens, чтобы следующий чанк
-        # начался с конца текущего. Размер перекрытия дискретен — кратен
-        # размерам атомов.
+        # Откатываемся назад на ~overlap_tokens для начала следующего чанка.
         new_i = j
         accumulated = 0
         while new_i > i + 1 and accumulated < overlap_tokens:
