@@ -1,0 +1,19 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-feature-settings: 'kern', 'liga', 'calt';
+}
+
+/* Tighten Vuetify card padding inside dialogs to make them feel less bulky */
+.v-card-title {
+  font-weight: 600 !important;
+}
+
+/* Prevent layout shift on scrollbar */
+html {
+  scrollbar-gutter: stable;
+}
