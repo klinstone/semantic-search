@@ -35,7 +35,6 @@ class DocumentListItem(BaseModel):
     uploaded_at: datetime
     indexed_at: datetime | None
 
-
 class DocumentList(BaseModel):
     """Контейнер пагинированного ответа GET /documents."""
 

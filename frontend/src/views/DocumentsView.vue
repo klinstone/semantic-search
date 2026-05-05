@@ -115,6 +115,21 @@ function askDelete(doc) {
   deleteTarget.value = doc
 }
 
+async function showError(item) {
+  // List endpoint omits error_message per the API contract,
+  // so fall back to GET /documents/{id} when needed.
+  let msg = item.error_message
+  if (msg == null) {
+    try {
+      msg = (await api.getDocument(item.id)).error_message
+    } catch (e) {
+      notify.error(e.message || 'Не удалось загрузить детали ошибки')
+      return
+    }
+  }
+  notify.error(msg || 'Сообщение об ошибке отсутствует', 12000)
+}
+
 async function confirmDelete() {
   if (!deleteTarget.value) return
   deleting.value = true
@@ -197,6 +212,8 @@ async function confirmDelete() {
             :color="STATUS_COLORS[item.status] || 'grey'"
             size="small"
             variant="tonal"
+            :class="{ 'is-clickable': item.status === 'failed' }"
+            @click.stop="item.status === 'failed' && showError(item)"
           >
             <v-progress-circular
               v-if="!isTerminalStatus(item.status)"
@@ -206,6 +223,9 @@ async function confirmDelete() {
               class="mr-1"
             />
             {{ STATUS_LABELS[item.status] || item.status }}
+            <v-icon v-if="item.status === 'failed'" end size="x-small">
+              mdi-information-outline
+            </v-icon>
           </v-chip>
         </template>
 
@@ -295,5 +315,8 @@ async function confirmDelete() {
 }
 .documents-table :deep(td) {
   font-size: 14px;
+}
+.is-clickable {
+  cursor: pointer;
 }
 </style>
