@@ -1,9 +1,9 @@
 <script setup>
-defineOptions({ name: 'SearchView' })
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
 import { useNotification } from '@/composables/useNotification'
 import SearchResultCard from '@/components/SearchResultCard.vue'
+import SearchScopeFilter from '@/components/SearchScopeFilter.vue'
 
 const notify = useNotification()
 
@@ -12,6 +12,9 @@ const limit = ref(10)
 const loading = ref(false)
 const response = ref(null)     // last full response from POST /search
 const lastQuery = ref('')
+
+// null = search across all indexed documents, [...uuids] = restrict to subset.
+const scope = ref(null)
 
 const hasResults = computed(() => !!response.value && response.value.results.length > 0)
 const isEmpty = computed(() => !!response.value && response.value.results.length === 0)
@@ -27,7 +30,10 @@ async function runSearch() {
 
   loading.value = true
   try {
-    response.value = await api.search(q, { limit: limit.value })
+    response.value = await api.search(q, {
+      limit: limit.value,
+      documentIds: scope.value
+    })
     lastQuery.value = q
   } catch (e) {
     notify.error(e.message || 'Ошибка поиска')
@@ -86,6 +92,7 @@ function clearQuery() {
             Найти
           </v-btn>
         </div>
+        <SearchScopeFilter v-model="scope" class="mt-3" />
       </v-form>
     </v-card>
 
@@ -116,7 +123,7 @@ function clearQuery() {
       <v-icon size="48" color="grey">mdi-text-search</v-icon>
       <div class="text-h6 mt-3">Ничего не найдено</div>
       <div class="text-body-2 text-medium-emphasis mt-1">
-        Попробуйте переформулировать запрос или загрузите больше документов
+        Попробуйте переформулировать запрос или расширить выбор документов
       </div>
       <v-btn class="mt-4" variant="text" to="/documents" prepend-icon="mdi-upload">
         Перейти к документам
