@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Должно совпадать с размерностью модели; проверяется при запуске.
     embedding_model: str = "intfloat/multilingual-e5-base"
     embedding_dim: int = 768
+    # Добавляем префиксы. По умолчанию: для e5.
+    embedding_query_prefix: str = "query: "
+    embedding_passage_prefix: str = "passage: "
 
     # --- Reranking ---
     # При reranking_enabled=true в lifespan загружается cross-encoder и

@@ -23,8 +23,8 @@ class Embedder:
         self,
         model_name: str,
         batch_size: int = DEFAULT_BATCH_SIZE,
-        passage_prefix: str = PASSAGE_PREFIX,
-        query_prefix: str = QUERY_PREFIX,
+        passage_prefix: str = "",
+        query_prefix: str = "",
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")

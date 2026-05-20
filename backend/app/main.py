@@ -50,7 +50,11 @@ def _ensure_qdrant_collection(client: QdrantClient) -> None:
 
 def _build_embedder() -> Embedder:
     """Загружает модель эмбеддингов и сверяет ее размерность с конфигом."""
-    embedder = Embedder(settings.embedding_model)
+    embedder = Embedder(
+        model_name=settings.embedding_model,
+        passage_prefix=settings.embedding_passage_prefix,
+        query_prefix=settings.embedding_query_prefix,
+    )
     if embedder.dim != settings.embedding_dim:
         raise RuntimeError(
             f"model {settings.embedding_model} produces dim={embedder.dim}, "
