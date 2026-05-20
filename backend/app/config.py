@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     embedding_model: str = "intfloat/multilingual-e5-base"
     embedding_dim: int = 768
 
+    # --- Reranking ---
+    # При reranking_enabled=true в lifespan загружается cross-encoder и
+    # SearchService переключается в режим: top-(limit*pool_factor) из Qdrant
+    # → rerank → top-limit.
+    reranking_enabled: bool = True
+    reranking_model: str = "BAAI/bge-reranker-v2-m3"
+    # Чем больше pool_factor, тем выше шанс «вытащить» правильный документ
+    # из глубины ранжирования за счёт CE, но дороже инференс. 5 — баланс.
+    reranking_pool_factor: int = 5
+
     # --- Chunking ---
     # Размер чанка в токенах модели. Запас от 512 покрывает префикс "passage: " и спецтокены.
     chunk_target_tokens: int = 400

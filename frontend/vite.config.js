@@ -22,7 +22,8 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       port: 5173,
       strictPort: true,
-      allowedHosts: ['localhost', '.ngrok-free.dev'],
+      allowedHosts: true,
+      // allowedHosts: ['localhost', '.ngrok-free.dev', '.loca.lt', '.lhr.life', '.trycloudflare.com'],
       // Forward /api/* to the FastAPI backend during development.
       // In production the same path is proxied by nginx (see nginx.conf).
       proxy: {

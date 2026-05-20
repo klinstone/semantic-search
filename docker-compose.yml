@@ -56,6 +56,10 @@ services:
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-document_chunks}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-base}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+      # Re-ranking
+      RERANKING_ENABLED: ${RERANKING_ENABLED:-true}
+      RERANKING_MODEL: ${RERANKING_MODEL:-BAAI/bge-reranker-v2-m3}
+      RERANKING_POOL_FACTOR: ${RERANKING_POOL_FACTOR:-5}
       # Storage
       UPLOAD_DIR: /data/uploads
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-10}
@@ -66,6 +70,7 @@ services:
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
     volumes:
       - ./backend/app:/app/app
+      - ./backend/evaluation:/app/evaluation
       - ./backend/alembic:/app/alembic
       - ./backend/alembic.ini:/app/alembic.ini
       - ./data/uploads:/data/uploads
@@ -80,6 +85,13 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
 
   frontend:
     image: node:20-alpine

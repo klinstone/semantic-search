@@ -14,6 +14,7 @@ from app.api.search import router as search_router
 from app.config import settings
 from app.embedding import Embedder
 from app.ingestion.pipeline import IngestionService
+from app.reranking import Reranker
 from app.search.service import SearchService
 
 logging.basicConfig(
@@ -59,6 +60,16 @@ def _build_embedder() -> Embedder:
     return embedder
 
 
+def _build_reranker() -> Reranker | None:
+    """Загружает cross-encoder, если включён в конфиге. Иначе None."""
+    if not settings.reranking_enabled:
+        logger.info("reranking disabled (RERANKING_ENABLED=false)")
+        return None
+    reranker = Reranker(settings.reranking_model)
+    reranker.warmup()
+    return reranker
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("starting up (env=%s, version=%s)", settings.app_env, settings.app_version)
@@ -69,6 +80,11 @@ async def lifespan(app: FastAPI):
     # Сначала эмбеддер — быстро падаем, если модель и конфиг не совпадают.
     embedder = _build_embedder()
     app.state.embedder = embedder
+
+    # Реранкер опционален. Если выключен в конфиге — None, SearchService
+    # принимает это и работает в исходном режиме без переранжирования.
+    reranker = _build_reranker()
+    app.state.reranker = reranker
 
     qdrant = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
     _ensure_qdrant_collection(qdrant)
@@ -84,6 +100,8 @@ async def lifespan(app: FastAPI):
     app.state.search = SearchService(
         embedder=embedder,
         collection_name=settings.qdrant_collection,
+        reranker=reranker,
+        rerank_pool_factor=settings.reranking_pool_factor,
     )
 
     yield

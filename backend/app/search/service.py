@@ -1,19 +1,25 @@
 """Сервис семантического поиска.
 
-Цепочка одного запроса:
+Цепочка одного запроса (без reranking):
     1. embed_query(text)            — векторизация (~50 мс на CPU)
     2. qdrant.query_points(...)     — top-k по косинусной близости
     3. SELECT chunks WHERE id IN    — загрузка текстов
     4. SELECT documents WHERE id IN — имена для отображения
     5. сборка ответа в порядке Qdrant
 
+С включённым reranker'ом меняется шаг 2: из Qdrant запрашивается
+расширенный пул limit*pool_factor кандидатов. После шагов 3–4
+добавляется промежуточный шаг: cross-encoder переранжирует
+выживший пул и возвращает финальные top-K с собственными скорами.
+
 Сами тексты чанков хранятся только в Postgres — Qdrant выступает как
 индекс по векторам, в его payload только document_id и chunk_index.
-Поэтому шаги 3–4 нужны для каждой выдачи.
+Поэтому шаги 3–4 нужны для каждой выдачи, и они же дают reranker'у
+текст пассажа для совместной оценки с запросом.
 
 Шаги 3 и 4 — два независимых SELECT по primary key, а не JOIN.
 Это проще тестируется (FakeSession не делает JOIN) и так же быстро на
-наших объёмах: top-k обычно ≤ 50 строк.
+наших объёмах: top-k обычно ≤ 50 строк, с reranking ≤ 250.
 """
 from __future__ import annotations
 
@@ -33,21 +39,27 @@ from sqlalchemy.orm import Session
 from app.embedding import Embedder
 from app.models.chunk import Chunk
 from app.models.document import Document
+from app.reranking import Reranker
 from app.schemas.search import SearchHit, SearchResponse
 
 logger = logging.getLogger(__name__)
 
 
 class SearchService:
-    """Stateful обёртка над Embedder + Qdrant. Один на процесс."""
+    """Stateful обёртка над Embedder + Qdrant (+ опционально Reranker).
+    Один на процесс."""
 
     def __init__(
         self,
         embedder: Embedder,
         collection_name: str,
+        reranker: Reranker | None = None,
+        rerank_pool_factor: int = 5,
     ) -> None:
         self._embedder = embedder
         self._collection = collection_name
+        self._reranker = reranker
+        self._rerank_pool_factor = rerank_pool_factor
 
     def search(
         self,
@@ -73,11 +85,15 @@ class SearchService:
         # 1. Векторизация запроса.
         query_vector = self._embedder.embed_query(query)
 
-        # 2. Поиск в Qdrant.
+        # 2. Поиск в Qdrant. С reranker'ом берём расширенный пул, чтобы
+        #    дать CE шанс переставить релевантные кандидаты, лежащие
+        #    за пределами top-K dense-выдачи.
+        qdrant_limit = limit * self._rerank_pool_factor if self._reranker else limit
+
         scored_points = qdrant.query_points(
             collection_name=self._collection,
             query=query_vector,
-            limit=limit,
+            limit=qdrant_limit,
             query_filter=_build_filter(document_ids),
             with_payload=True,
         ).points
@@ -98,10 +114,9 @@ class SearchService:
         doc_ids = {ch.document_id for ch in chunks_by_id.values()}
         docs_by_id = self._fetch_documents(db, list(doc_ids))
 
-        # 5. Сборка ответа в порядке Qdrant. Пропускаем точки, у которых
-        #    нет соответствия в БД — это последствие race с DELETE
-        #    (документ или чанк удалили между search и SELECT).
-        results: list[SearchHit] = []
+        # 5a. Фильтрация выживших точек: пропускаем те, чьи chunk/document
+        #     отсутствуют в БД (race с DELETE между Qdrant-поиском и SELECT).
+        survived: list[tuple[float, Chunk, Document]] = []
         for sp in scored_points:
             chunk_id = UUID(str(sp.id))
             chunk = chunks_by_id.get(chunk_id)
@@ -118,15 +133,25 @@ class SearchService:
                     chunk.document_id,
                 )
                 continue
-            results.append(SearchHit(
-                chunk_id=chunk.id,
-                document_id=document.id,
-                document_filename=document.filename,
-                text=chunk.text,
-                score=float(sp.score),
-                chunk_index=chunk.chunk_index,
-                metadata=dict(chunk.chunk_metadata or {}),
-            ))
+            survived.append((float(sp.score), chunk, document))
+
+        # 5b. Reranking (если включён) переупорядочивает выживший пул.
+        #     Скор Qdrant'а заменяется на CE-логит, который имеет смысл
+        #     только в рамках одного запроса.
+        if self._reranker is not None and survived:
+            candidates = [(str(chunk.id), chunk.text) for _, chunk, _ in survived]
+            reranked = self._reranker.rerank(query, candidates, top_k=limit)
+            by_id = {str(chunk.id): (chunk, doc) for _, chunk, doc in survived}
+            results = [
+                _make_hit(*by_id[cid], score=score)
+                for cid, score in reranked
+            ]
+        else:
+            # Без reranker'а — порядок Qdrant, обрезаем до limit.
+            results = [
+                _make_hit(chunk, doc, score=score)
+                for score, chunk, doc in survived[:limit]
+            ]
 
         return SearchResponse(
             query=query,
@@ -150,18 +175,34 @@ class SearchService:
         return {d.id: d for d in rows}
 
 
+def _make_hit(chunk: Chunk, document: Document, *, score: float) -> SearchHit:
+    return SearchHit(
+        chunk_id=chunk.id,
+        document_id=document.id,
+        document_filename=document.filename,
+        text=chunk.text,
+        score=score,
+        chunk_index=chunk.chunk_index,
+        metadata=dict(chunk.chunk_metadata or {}),
+    )
+
+
 def _build_filter(document_ids: list[UUID] | None) -> Filter | None:
     """None / пустой список / непустой — три разных режима.
     Вызывающий код должен короткозамкнуть пустой список ДО этого вызова;
     здесь обрабатываем только None и непустой случай.
     """
-    if not document_ids:
+    if document_ids is None:
         return None
-    return Filter(must=[FieldCondition(
-        key="document_id",
-        match=MatchAny(any=[str(uid) for uid in document_ids]),
-    )])
+    return Filter(
+        must=[
+            FieldCondition(
+                key="document_id",
+                match=MatchAny(any=[str(d) for d in document_ids]),
+            )
+        ]
+    )
 
 
-def _ms(start: float) -> int:
-    return int((time.perf_counter() - start) * 1000)
+def _ms(t0: float) -> int:
+    return int((time.perf_counter() - t0) * 1000)
