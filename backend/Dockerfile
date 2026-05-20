@@ -22,7 +22,8 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY uv.lock* ./
 
-RUN uv sync --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync
 
 # Код приложения и миграции
 COPY app ./app
