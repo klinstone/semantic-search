@@ -1,15 +1,18 @@
-"""Обёртка эмбеддингов для моделей intfloat/multilingual-e5-*.
+"""Универсальная обёртка эмбеддингов.
 
-Требует ролевых префиксов ("passage: " / "query: ") и применяет L2-нормализацию к выходным векторам.
+Поддерживает настройку ролевых префиксов ("passage: " / "query: " и др.) через конфиг
+и применяет L2-нормализацию к выходным векторам. Модели загружаются в FP16
+для экономии видеопамяти.
 """
 import logging
+import torch
 
 from sentence_transformers import SentenceTransformer
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 logger = logging.getLogger(__name__)
 
-# Консервативный размер батча для инференса на CPU.
+# Консервативный размер батча для инференса на CPU/слабых GPU.
 DEFAULT_BATCH_SIZE = 8
 
 
@@ -26,8 +29,12 @@ class Embedder:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
 
-        logger.info("loading embedding model %s", model_name)
-        self._model = SentenceTransformer(model_name)
+        logger.info("loading embedding model %s (FP16)", model_name)
+        # Загружаем модель в float16, чтобы она занимала в 2 раза меньше видеопамяти
+        self._model = SentenceTransformer(
+            model_name,
+            model_kwargs={"torch_dtype": torch.float16}
+        )
         self._model_name = model_name
         self._batch_size = batch_size
         self._passage_prefix = passage_prefix
@@ -65,7 +72,7 @@ class Embedder:
     def embed_passages(self, texts: list[str]) -> list[list[float]]:
         """Векторизует чанки документа.
 
-        К каждому тексту добавляется префикс ``"passage: "``. Возвращает
+        К каждому тексту добавляется префикс (если задан). Возвращает
         список L2-нормализованных векторов в порядке входных текстов.
         Пустой вход — пустой выход (без обращения к модели).
         """

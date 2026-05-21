@@ -58,8 +58,8 @@ DATASETS = {
 ALLOWED_CONFIGS = ["semantic", "semantic+rerank"]
 
 DEFAULT_FINAL_K = 10
-DEFAULT_INDEX_BATCH_SIZE = 64
-DEFAULT_QUERY_BATCH_SIZE = 64
+DEFAULT_INDEX_BATCH_SIZE = 16
+DEFAULT_QUERY_BATCH_SIZE = 16
 DEFAULT_RERANK_POOL_FACTOR = 5
 
 # time_ms — среднее время на запрос (эмбеддинг + retrieval + опционально
@@ -427,9 +427,17 @@ def print_results(
     width = max(15, max(len(d) for d in datasets) + 2)
 
     for config in configs:
+
+        # Формируем красивое название с учетом моделей
+        if config == "semantic":
+            display_name = f"semantic({settings.embedding_model})"
+        elif config == "semantic+rerank":
+            display_name = f"semantic({settings.embedding_model})+rerank({settings.reranking_model})"
+        else:
+            display_name = config
         print()
         print("=" * 80)
-        print(f"Configuration: {config}")
+        print(f"Configuration: {display_name}")
         print("=" * 80)
         head, sep = _header("Dataset", width)
         print(head)
