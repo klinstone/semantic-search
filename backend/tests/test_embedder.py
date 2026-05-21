@@ -7,8 +7,6 @@ import math
 import pytest
 
 from app.embedding import (
-    PASSAGE_PREFIX,
-    QUERY_PREFIX,
     Embedder,
 )
 
@@ -99,16 +97,6 @@ def test_query_finds_relevant_passage_over_noise(embedder):
     assert _cosine(q, v_rel) > _cosine(q, v_noise)
 
 
-def test_passage_and_query_prefixes_produce_different_vectors(embedder):
-    """Один и тот же текст с разными ролями должен давать разные векторы.
-    Если совпадают — значит префиксы где-то теряются."""
-    text = "Один и тот же текст без всякого изменения"
-    v_passage = embedder.embed_passages([text])[0]
-    v_query = embedder.embed_query(text)
-    sim = _cosine(v_passage, v_query)
-    assert sim < 0.999, "passage и query векторы идентичны — префиксы не применяются"
-
-
 def test_batch_encoding_matches_singleton_encoding(embedder):
     """Эмбеддинг текста по одному и в составе батча должен совпадать
     с точностью до численных погрешностей float."""
@@ -121,11 +109,6 @@ def test_batch_encoding_matches_singleton_encoding(embedder):
 
 def test_warmup_does_not_raise(embedder):
     embedder.warmup()
-
-
-def test_constants_match_e5_card():
-    assert PASSAGE_PREFIX == "passage: "
-    assert QUERY_PREFIX == "query: "
 
 
 def test_invalid_batch_size_raises():

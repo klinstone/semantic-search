@@ -9,9 +9,6 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 logger = logging.getLogger(__name__)
 
-PASSAGE_PREFIX = "passage: "
-QUERY_PREFIX = "query: "
-
 # Консервативный размер батча для инференса на CPU.
 DEFAULT_BATCH_SIZE = 8
 
@@ -100,6 +97,21 @@ class Embedder:
             show_progress_bar=False,
         )
         return vector.tolist()
+
+    def embed_queries(self, texts: list[str], batch_size: int | None = None) -> list[list[float]]:
+        """Векторизует список поисковых запросов батчем (для тестов/бенчмарков)."""
+        if not texts:
+            return []
+        prefixed = [self._query_prefix + t for t in texts]
+        bs = batch_size if batch_size is not None else self._batch_size
+        vectors = self._model.encode(
+            prefixed,
+            batch_size=bs,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+        )
+        return vectors.tolist()
 
     def warmup(self) -> None:
         """Холостой прогон encode для ленивой инициализации PyTorch при старте."""
