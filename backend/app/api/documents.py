@@ -48,13 +48,13 @@ def _validate_upload(file: UploadFile) -> None:
     if file.size is None or file.size == 0:
         raise AppError(
             code="INVALID_FILE",
-            message="File is empty",
+            message="Файл пустой",
             status_code=422,
         )
     if file.size > settings.max_upload_size_bytes:
         raise AppError(
             code="FILE_TOO_LARGE",
-            message=f"File exceeds {settings.max_upload_size_mb}MB limit",
+            message=f"Размер файла превышает лимит в {settings.max_upload_size_mb} МБ",
             status_code=413,
             details={
                 "size_bytes": file.size,
@@ -66,7 +66,7 @@ def _validate_upload(file: UploadFile) -> None:
     if not file.filename:
         raise AppError(
             code="INVALID_FILE",
-            message="Filename is missing",
+            message="Отсутствует имя файла",
             status_code=422,
         )
 
@@ -75,7 +75,7 @@ def _validate_upload(file: UploadFile) -> None:
     if ext not in ALLOWED_EXTENSIONS:
         raise AppError(
             code="UNSUPPORTED_FILE_TYPE",
-            message=f"File extension '.{ext}' is not supported",
+            message=f"Расширение файла '.{ext}' не поддерживается",
             status_code=415,
             details={"allowed_extensions": sorted(ALLOWED_EXTENSIONS)},
         )
@@ -86,8 +86,8 @@ def _validate_upload(file: UploadFile) -> None:
         raise AppError(
             code="UNSUPPORTED_FILE_TYPE",
             message=(
-                f"MIME type '{file.content_type}' does not match "
-                f"declared extension '.{ext}' (expected '{expected_mime}')"
+                f"Тип MIME '{file.content_type}' не соответствует "
+                f"объявленному расширению '.{ext}' (ожидается '{expected_mime}')"
             ),
             status_code=415,
             details={"declared_mime": file.content_type, "expected_mime": expected_mime},
@@ -102,7 +102,7 @@ def _validate_upload(file: UploadFile) -> None:
     if not check_magic_bytes(file.content_type, header):
         raise AppError(
             code="INVALID_FILE",
-            message=f"File content does not match declared type '{file.content_type}'",
+            message=f"Содержимое файла не соответствует его расширению '{file.content_type}'",
             status_code=422,
         )
 
@@ -167,7 +167,7 @@ def upload_document(
         logger.exception("failed to save upload to %s", file_path)
         raise AppError(
             code="STORAGE_ERROR",
-            message="Failed to save uploaded file",
+            message="Не удалось сохранить загруженный файл на диск",
             status_code=500,
         )
 
@@ -188,7 +188,7 @@ def upload_document(
         delete_file(file_path)
         raise AppError(
             code="STORAGE_ERROR",
-            message="Failed to create document record",
+            message="Не удалось создать запись документа в базе данных",
             status_code=500,
         )
 
@@ -265,7 +265,7 @@ def get_document(
     if document is None:
         raise AppError(
             code="NOT_FOUND",
-            message=f"Document {document_id} not found",
+            message=f"Документ не найден",
             status_code=404,
         )
     return DocumentDetail.model_validate(document)
@@ -292,7 +292,7 @@ def delete_document(
     if document is None:
         raise AppError(
             code="NOT_FOUND",
-            message=f"Document {document_id} not found",
+            message=f"Документ не найден или уже удалён",
             status_code=404,
         )
 

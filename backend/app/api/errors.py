@@ -78,7 +78,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         return _error_response(
             status_code=422,
             code="VALIDATION_ERROR",
-            message="Request validation failed",
+            message="Неверный формат запроса",
             details={"errors": exc.errors()},
         )
 
@@ -103,5 +103,5 @@ def register_exception_handlers(app: FastAPI) -> None:
         return _error_response(
             status_code=500,
             code="INTERNAL_ERROR",
-            message="Internal server error",
+            message="Внутренняя ошибка сервера",
         )

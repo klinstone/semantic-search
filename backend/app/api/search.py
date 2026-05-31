@@ -38,7 +38,7 @@ def search(
     if not body.query.strip():
         raise AppError(
             code="INVALID_QUERY",
-            message="query must not be empty or whitespace-only",
+            message="Поисковый запрос не может быть пустым",
             status_code=422,
         )
 

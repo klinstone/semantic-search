@@ -23,7 +23,7 @@ def parse(path: Path) -> str:
     try:
         reader = PdfReader(str(path))
     except (PdfReadError, OSError) as e:
-        raise CorruptFileError(f"failed to open PDF: {e}") from e
+        raise CorruptFileError(f"Не удалось открыть PDF файл (возможно, он повреждён): {e}") from e
 
     pages: list[str] = []
     for page_num, page in enumerate(reader.pages):

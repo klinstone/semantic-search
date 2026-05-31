@@ -28,12 +28,12 @@ def parse_file(path: Path, mime_type: str) -> str:
     """
     parser = _PARSERS.get(mime_type)
     if parser is None:
-        raise UnsupportedFormatError(f"no parser for MIME type {mime_type!r}")
+        raise UnsupportedFormatError(f"Формат файла {mime_type!r} не поддерживается")
 
     text = parser(path)
     if not text.strip():
         raise EmptyTextError(
-            f"no text extracted from {path.name} (possibly a scanned PDF)"
+            f"Из файла не удалось извлечь текст (возможно, это PDF-скан)"
         )
 
     logger.info(

@@ -21,7 +21,7 @@ def parse(path: Path) -> str:
     try:
         raw = path.read_bytes()
     except OSError as e:
-        raise CorruptFileError(f"failed to read file: {e}") from e
+        raise CorruptFileError(f"Не удалось открыть TXT файл (возможно, он повреждён): {e}") from e
 
     for encoding in _ENCODINGS_TO_TRY:
         try:

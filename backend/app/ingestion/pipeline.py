@@ -107,7 +107,7 @@ class IngestionService:
             raise IndexingError(str(exc)) from exc
         except Exception as exc:
             logger.exception("indexing failed for document %s", document_id)
-            self._mark_failed(db, document_id, "internal error during indexing")
+            self._mark_failed(db, document_id, "Внутренняя ошибка сервера при индексации")
             raise IndexingError("internal error during indexing") from exc
 
     def _run(
@@ -123,7 +123,7 @@ class IngestionService:
         file_path = self._upload_dir / f"{document_id}.{ext}"
         if not file_path.exists():
             # Отсутствие файла считаем ошибкой для пользователя
-            raise CorruptFileError(f"file for document {document_id} not found on disk")
+            raise CorruptFileError(f"Файл для документа не найден на диске")
         text = parse_file(file_path, document.mime_type)
         text_length = len(text)
 
@@ -135,7 +135,7 @@ class IngestionService:
             overlap_tokens=self._overlap_tokens,
         )
         if not chunks:
-            raise EmptyTextError(f"no chunks produced from {document.filename}")
+            raise EmptyTextError(f"Не удалось создать фрагменты из {document.filename}")
 
         logger.info(
             "document %s: %d chars, %d chunks",

@@ -48,7 +48,7 @@ def parse(path: Path) -> str:
     try:
         doc = DocxDocument(str(path))
     except (PackageNotFoundError, OSError) as e:
-        raise CorruptFileError(f"failed to open DOCX: {e}") from e
+        raise CorruptFileError(f"Не удалось открыть DOCX файл (возможно, он повреждён): {e}") from e
 
     parts = _iter_block_text(doc.element.body)
     text = "\n".join(parts)
