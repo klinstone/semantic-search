@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     # → rerank → top-limit.
     reranking_enabled: bool = True
     reranking_model: str = "BAAI/bge-reranker-v2-m3"
+    reranking_max_length: int = 512
     # Чем больше pool_factor, тем выше шанс «вытащить» правильный документ
     # из глубины ранжирования за счёт CE, но дороже инференс. 5 — баланс.
     reranking_pool_factor: int = 5

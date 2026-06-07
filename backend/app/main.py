@@ -69,7 +69,7 @@ def _build_reranker() -> Reranker | None:
     if not settings.reranking_enabled:
         logger.info("reranking disabled (RERANKING_ENABLED=false)")
         return None
-    reranker = Reranker(settings.reranking_model)
+    reranker = Reranker(settings.reranking_model, max_length=settings.reranking_max_length)
     reranker.warmup()
     return reranker
 
